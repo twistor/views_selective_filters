@@ -1,0 +1,7 @@
+name: Views selective filters
+type: module
+description: Restrict exposed filter values to those present in the result set.
+package: Views
+core: 8.x
+dependencies:
+  - views
