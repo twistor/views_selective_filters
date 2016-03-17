@@ -39,6 +39,7 @@ class Selective extends InOperator {
     parent::init($view, $display, $options);
 
     $this->options['exposed'] = TRUE;
+    $this->realField = $this->options['selective_display_field'];
   }
 
   /**
@@ -359,13 +360,16 @@ class Selective extends InOperator {
         $field->getValueOptions();
       }
 
+      $style = $display->getPlugin('style');
+
       // Create array of objects for selector.
       $oids = [];
       foreach ($view_copy->result as $row) {
         $key = $field->getValue($row);
         $key = is_array($key) ? reset($key) : $key;
         // @todo This double escapes markup.
-        $oids[$key] = SafeMarkup::checkPlain($field->render($row));
+        $value = $style->getField($row->index, $field_id);
+        $oids[$key] = SafeMarkup::checkPlain($value);
       }
 
       // Sort values.
