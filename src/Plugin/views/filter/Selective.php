@@ -7,8 +7,11 @@
 
 namespace Drupal\views_selective_filters\Plugin\views\filter;
 
+use Drupal\Component\Utility\SafeMarkup;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\views\Plugin\views\display\DisplayPluginBase;
 use Drupal\views\Plugin\views\filter\InOperator;
+use Drupal\views\ViewExecutable;
 use Drupal\views\Views;
 
 /**
@@ -28,6 +31,15 @@ class Selective extends InOperator {
   protected $originalOptions;
 
   protected static $results;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function init(ViewExecutable $view, DisplayPluginBase $display, array &$options = NULL) {
+    parent::init($view, $display, $options);
+
+    $this->options['exposed'] = TRUE;
+  }
 
   /**
    * {@inheritdoc}
@@ -62,7 +74,6 @@ class Selective extends InOperator {
     // is to prevent infinite recursive loop.
     if (empty($this->view->selective_oids) && !empty($this->view->inited)) {
       $this->valueOptions = $this->getOids();
-      debug('called');
       // TODO: Omit null values in result: they are improperly handled.
       // When constructing the query.
       $this->valueOptions = array_diff_key($this->valueOptions, ['' => NULL]);
@@ -109,9 +120,8 @@ class Selective extends InOperator {
   /**
    * Checks if two base fields are compatible.
    */
-  protected function BaseFieldCompatible($base_field1, $base_field2) {
+  protected function baseFieldCompatible($base_field1, $base_field2) {
     return strpos($base_field2, $base_field1) === 0;
-    return preg_match('/^' . $base_field1 . '/', $base_field2);
   }
 
   /**
@@ -124,29 +134,28 @@ class Selective extends InOperator {
     // Filter should always be exposed, show warning.
     array_unshift($form['expose_button'], array(
       'warning' => array(
-        '#type' => 'markup',
-        '#markup' => '<div class="messages warning">' . t('This filter is always exposed to users.') . '</div>',
+        '#theme' => 'status_messages',
+        '#message_list' => ['warning' => [t('This filter is always exposed to users.')]],
+        '#status_headings' => [
+          'status' => t('Status message'),
+          'error' => t('Error message'),
+          'warning' => t('Warning message'),
+        ],
       )));
     // Remove option to unexpose filter. Tried to disable, but did not work.
     $form['expose_button']['checkbox']['checkbox']['#type'] = 'hidden';
     unset($form['expose_button']['button']);
     unset($form['expose_button']['markup']);
     // Do not allow to check "all values".
-    $form['value']['#attributes']['disabled'] = 'disabled';
+    $form['value']['#access'] = FALSE;
     // Cannot group without values.
     unset($form['group_button']);
 
-    // Preload handlers, sorts and filters.
-    // This gest cached all along.
-    $this->view->display_handler->getHandlers('field');
-    $this->view->display_handler->getHandlers('sort');
-    $this->view->display_handler->getHandlers('filter');
-
     // Add combo to pick display field for filter.
     $options = [];
-    foreach ($this->view->display_handler->handlers['field'] as $key => $handler) {
-      if ($this->BaseFieldCompatible($base_field, $handler->field)) {
-        $options[$handler->options['id']] = $handler->definition['group'] . ': ' . $handler->definition['title'] . '(' . $handler->label() . ')';
+    foreach ($this->view->display_handler->getHandlers('field') as $field) {
+      if ($this->baseFieldCompatible($base_field, $field->field)) {
+        $options[$field->options['id']] = $field->adminLabel();
       }
     }
 
@@ -218,13 +227,7 @@ class Selective extends InOperator {
     if (isset($this->view->selective_handler_signature) && $this->getSignature() === $this->view->selective_handler_signature) {
       return;
     }
-    // Decode the values to restore special chars.
-    if (is_array($this->value)) {
-      $this->value = array_map('urldecode', $this->value);
-    }
-    elseif (is_string($this->value)){
-      $this->value = urldecode($this->value);
-    }
+
     parent::query();
   }
 
@@ -236,14 +239,14 @@ class Selective extends InOperator {
    */
   protected function getSignature() {
     return hash('sha256', serialize(array(
-      'name' => $this->view->name,
+      'id' => $this->view->id(),
       'args' => $this->view->args,
-      'input' => $this->view->exposed_input,
+      'input' => $this->view->getExposedInput(),
       'base_field' => $this->definition['field_base'],
-      'real_field' => $this->real_field,
+      'real_field' => $this->realField,
       'field' => $this->field,
       'table' => $this->table,
-      'ui_name' => $this->options['ui_name'],
+      'ui_name' => $this->adminLabel(),
     )));
   }
 
@@ -253,7 +256,7 @@ class Selective extends InOperator {
   protected function getOids() {
     // Parameters that we will be using during the process.
     $base_field = $this->definition['field_base'];
-    $ui_name = $this->options['ui_name'];
+    $ui_name = $this->adminLabel();
     $signature = $this->getSignature();
 
     // Prevent same filters from being recalculated.
@@ -280,54 +283,18 @@ class Selective extends InOperator {
       // Limit result set to 100: anything above is not user friendly at all.
       $view_copy->setItemsPerPage($max_items);
 
-      // Remove paging, and page number from context.
-      if (isset($_GET['items_per_page'])) {
-        $items_per_page = $_GET['items_per_page'];
-        unset($_GET['items_per_page']);
-      }
-      if (isset($_GET['page'])) {
-        $exposed_page = $_GET['page'];
-        unset($_GET['page']);
-      }
-
-      // Manipulate display + default: don't know if fields are overriden.
-      $display = $view_copy->display[$this->view->current_display];
-      $display_default = $view_copy->display['default'];
+      $view_copy->setDisplay($this->view->current_display);
+      $display = $view_copy->getDisplay();
 
       // Remove any exposed form configuration. This showed up with BEF module!
       unset($display->display_options['exposed_form']);
-      unset($display_default->display_options['exposed_form']);
 
-      // Also disable attachments.
-      $display->handler->definition['accept attachments'] = FALSE;
-      $display_default->handler->definition['accept attachments'] = FALSE;
+      $fields =& $display->getHandlers('field');
 
-      // If we are using fields from default or current display.
-      if (isset($display->display_options['fields'])) {
-        $display_options_fields = &$display->display_options['fields'];
-      }
-      else {
-        $display_options_fields = &$display_default->display_options['fields'];
-      }
-
-      // Original implementation based field matching on ui_name matches
-      // so we need to preserve backwards compatibility.
-      $field_to_keep = $this->options['selective_display_field'];
-
-      // Remove all fields but the one used to display and aggregate.
-      foreach ($display_options_fields as $key => $value) {
-        if ($key !== $field_to_keep) {
-          unset($display_options_fields[$key]);
-        }
-        else {
-          // If there is a group column on the field, remove it so Field Collections will work.
-          // https://www.drupal.org/node/2333065
-          unset($display_options_fields[$key]['group_column']);
-        }
-      }
+      $fields = array_intersect_key($fields, [$this->options['selective_display_field'] => TRUE]);
 
       // Check to see if the user remembered to add the field.
-      if (empty($display_options_fields)) {
+      if (empty($fields)) {
         drupal_set_message(t('Selective query filter must have corresponding field added to view with Administrative Name set to "@name" and Base Type "@type"',
           array(
             '@name' => $ui_name,
@@ -337,17 +304,19 @@ class Selective extends InOperator {
       }
 
       // Get ID of field that will be used for rendering.
-      $display_field = reset($display_options_fields);
+      $field = reset($fields);
+
+      $field_options = $field->options;
 
       // Get field Id.
-      $display_field_id = $display_field['id'];
+      $field_id = $field_options['id'];
 
       // Check that relationships are coherent between Field and Filter.
-      $no_display_field_relationship = empty($display_field['relationship']) || $display_field['relationship'] === 'none';
+      $no_display_field_relationship = empty($field_options['relationship']) || $field_options['relationship'] === 'none';
       $no_filter_relationship = empty($this->options['relationship']) || $this->options['relationship'] === 'none';
       $equal
         = (($no_display_field_relationship === TRUE) && ($no_filter_relationship === TRUE)) ||
-        ($display_field['relationship'] === $this->options['relationship']);
+        ($field_options['relationship'] === $this->options['relationship']);
 
       if (!$equal) {
         drupal_set_message(t('Selective filter "@name": relationship of field and filter must match.',
@@ -360,71 +329,43 @@ class Selective extends InOperator {
 
       // If main field is excluded from presentation, bring it back.
       // Set group type for handler to populate database relationships in query.
-      $display_field['exclude'] = 0;
-      $display_field['group_type'] = 'group';
+      $field_options['exclude'] = 0;
+      $field_options['group_type'] = 'group';
 
       // Remove all sorting: sorts must be added to aggregate fields.
-      unset($display->display_options['sorts']);
-      unset($display_default->display_options['sorts']);
+      // $sorts =& $display->getHandlers('sort');
+      // $sorts = [];
 
       // Turn this into an aggregate query.
-      $display->display_options['group_by'] = 1;
-      $display->handler->options['group_by'] = 1;
-
-      $display_default->display_options['group_by'] = 1;
-      $display_default->handler->options['group_by'] = 1;
+      $display->setOption('group_by', 1);
 
       // Aggregate is incompatible with distinct and pure distinct.
       // At least it does not make sense as it is implemented now.
-      unset($display_default->display_options['query']['options']['distinct']);
-      unset($display_default->display_options['query']['options']['pure_distinct']);
+      $query_options = $display->getOption('query');
+      $query_options['options']['distinct'] = TRUE;
+      $display->setOption('query', $query_options);
 
-      unset($display->display_options['query']['options']['distinct']);
-      unset($display->display_options['query']['options']['pure_distinct']);
-
-      // Make sure we are not using a pager to prevent unnecessary count(*) queries.
-      $display->display_options['pager'] = unserialize('a:2:{s:4:"type";s:4:"none";s:7:"options";a:1:{s:6:"offset";s:1:"0";}}');
-      $display_default->display_options['pager'] = unserialize('a:2:{s:4:"type";s:4:"none";s:7:"options";a:1:{s:6:"offset";s:1:"0";}}');
-
-      // Some style plugins can affect the built query, make sure
-      // we use a reliable field based style plugin.
-      $display->display_options['style_plugin'] = 'default';
-      $display->display_options['style_options'] = unserialize('a:4:{s:9:"row_class";s:0:"";s:17:"default_row_class";i:1;s:17:"row_class_special";i:1;s:11:"uses_fields";i:0;}');
-      $display->display_options['row_plugin'] = 'fields';
-      $display->display_options['row_options'] = unserialize('s:6:"fields";');
+      // Some style plugins can affect the built query, make sure we use a
+      // reliable field based style plugin.
+      $display->setOption('pager', ['type' => 'none', 'options' => []]);
+      $display->setOption('style', ['type' => 'default', 'options' => []]);
+      $display->setOption('row', ['type' => 'fields', 'options' => []]);
 
       // Run View.
       $view_copy->execute($this->view->current_display);
 
-      // Restore context parameters for real View.
-      if (isset($items_per_page)) {
-        $_GET['items_per_page'] = $items_per_page;
-      }
-      if (isset($exposed_page)) {
-        $_GET['page'] = $exposed_page;
-      }
-
-      // Get Handler after execution.
-      $display_field_handler = $view_copy->field[$display_field_id];
-
       // We show human-readable values when case.
-      if (method_exists($display_field_handler, 'getValueOptions')) {
-        $display_field_handler->getValueOptions();
+      if (method_exists($field, 'getValueOptions')) {
+        $field->getValueOptions();
       }
 
       // Create array of objects for selector.
       $oids = [];
-      $field_alias = isset($display_field_handler->aliases[$display_field_handler->real_field]) ? $display_field_handler->aliases[$display_field_handler->real_field] : $display_field_handler->table_alias . '_' . $display_field_handler->real_field;
-      foreach ($view_copy->result as $index => $row) {
-        // $key = $display_field_handler->get_value($row) should be more robust.
-        // But values are sometimes nested arrays, and we need single values.
-        // For the filters.
-        $key = $display_field_handler->get_value($row);
-        if (is_array($key)) {
-          $key = $row->{$field_alias};
-        }
-        $value = strip_tags($view_copy->render_field($display_field_id, $index));
-        $oids[$key] = empty($value) ? t('Empty (@key)', array('@key' => empty($key) ? json_encode($key) : $key)) : $value;
+      foreach ($view_copy->result as $row) {
+        $key = $field->getValue($row);
+        $key = is_array($key) ? reset($key) : $key;
+        // @todo This double escapes markup.
+        $oids[$key] = SafeMarkup::checkPlain($field->render($row));
       }
 
       // Sort values.
@@ -465,6 +406,7 @@ class Selective extends InOperator {
       static::$results[$signature] = $oids;
       $view_copy->destroy();
     }
+
     return static::$results[$signature];
   }
 
