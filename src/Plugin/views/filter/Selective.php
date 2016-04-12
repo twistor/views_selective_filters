@@ -351,6 +351,7 @@ class Selective extends InOperator {
       $display->setOption('pager', ['type' => 'none', 'options' => []]);
       $display->setOption('style', ['type' => 'default', 'options' => []]);
       $display->setOption('row', ['type' => 'fields', 'options' => []]);
+      $display->setOption('cache', ['type' => 'none', 'options' => []]);
 
       // Run View.
       $view_copy->execute($this->view->current_display);
