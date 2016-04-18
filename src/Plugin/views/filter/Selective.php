@@ -119,6 +119,31 @@ class Selective extends InOperator {
   }
 
   /**
+   * {@inheritdoc}
+   */
+  public function validate() {
+    $this->getValueOptions();
+    $errors = array();
+
+    // If the operator is an operator which doesn't require a value, there is
+    // no need for additional validation.
+    if (in_array($this->operator, $this->operatorValues(0))) {
+      return array();
+    }
+
+    if (!in_array($this->operator, $this->operatorValues(1))) {
+      $errors[] = $this->t('The operator is invalid on filter: @filter.', array('@filter' => $this->adminLabel(TRUE)));
+    }
+    if (is_array($this->value)) {
+      // This is overridden because it causes problems during preview.
+    }
+    elseif (!empty($this->value) && ($this->operator == 'in' || $this->operator == 'not in')) {
+      $errors[] = $this->t('The value @value is not an array for @operator on filter: @filter', array('@value' => var_export($this->value), '@operator' => $this->operator, '@filter' => $this->adminLabel(TRUE)));
+    }
+    return $errors;
+  }
+
+  /**
    * Checks if two base fields are compatible.
    */
   protected function baseFieldCompatible($base_field1, $base_field2) {
